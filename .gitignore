@@ -1,0 +1,4 @@
+secrets.yaml
+*.bak
+.DS_Store
+Thumbs.db

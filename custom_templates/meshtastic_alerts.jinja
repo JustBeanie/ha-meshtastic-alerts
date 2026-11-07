@@ -1,0 +1,58 @@
+{#-
+    meshtastic_alerts.jinja — macros for the Meshtastic Alerts package.
+    Copy into <config>/custom_templates/. Home Assistant reloads this folder on its own;
+    to force it, call homeassistant.reload_custom_templates.
+-#}
+
+{#-
+    Macro: getMeshtasticScript
+    Description: Looks up the handler script for an alert type in the routing table
+                 (input_select.meshtastic_routing). Each option is "<alertType>,<script entity_id>".
+                 Renders an empty string when there is no route.
+                 NOTE: it does NOT check that the script exists — the router handles that
+                 (continue_on_error on dispatch + an advisory notification).
+
+    Arguments:   alertType (string) the envelope's "type"
+
+    Usage Example:
+      {% from 'meshtastic_alerts.jinja' import getMeshtasticScript %}
+      {{ getMeshtasticScript('garageAlert') | trim }}
+      Expected Output: script.remote_garage_alert
+-#}
+{% macro getMeshtasticScript(alertType) %}
+  {% set ns = namespace(script='') %}
+  {% for option in state_attr('input_select.meshtastic_routing', 'options') | default([], true) %}
+    {% if option.startswith(alertType ~ ',') %}
+      {% set ns.script = option.split(',')[1] %}
+    {% endif %}
+  {% endfor %}
+  {{ ns.script }}
+{% endmacro %}
+
+
+{#-
+    Macro: meshAlert
+    Description: Renders the JSON alert envelope that goes over the mesh. Every broadcast should
+                 render through this, so the wire format lives in one place.
+
+    Arguments:   type   (string) routing key, e.g. 'garageAlert'
+                 entity (string) human-readable name of what the alert is about
+                 state  (string) what happened
+                 notify (string) receiver-side notify target the sender would like used. The
+                                 receiver only honours it if it equals ITS OWN configured
+                                 input_text.meshtastic_alert_notify; otherwise notify.notify.
+                 retry  (int)    retry counter
+                 extra  (dict)   optional extra string keys, inserted before "notify"
+
+    Usage Example:
+      {% from 'meshtastic_alerts.jinja' import meshAlert %}
+      {{ meshAlert('garageAlert', 'Garage Door', 'open') | trim }}
+      Expected Output: {"type": "garageAlert", "entity": "Garage Door", "state": "open", "notify": "notify.notify", "retry": 0}
+-#}
+{%- macro meshAlert(type, entity, state, notify='notify.notify', retry=0, extra=none) -%}
+{%- set ns = namespace(x='') -%}
+{%- for k, v in (extra if extra is not none else {}).items() -%}
+{%- set ns.x = ns.x ~ '"' ~ k ~ '": "' ~ v ~ '", ' -%}
+{%- endfor -%}
+{"type": "{{ type }}", "entity": "{{ entity }}", "state": "{{ state }}", {{ ns.x }}"notify": "{{ notify }}", "retry": {{ retry | int(0) }}}
+{%- endmacro -%}

@@ -1,0 +1,45 @@
+# Example sender: broadcast wanAlert when the WAN goes down or comes back, and mirror it into
+# input_boolean.wan_down. Paste into automations (UI → YAML mode) or into the package.
+#
+# Replace the entity list with YOUR WAN signals. Use two independent ones if you can (for example
+# a router-side WAN status sensor and an external ping/reachability sensor), so a false negative
+# on one side doesn't stand alone.
+- id: wan_alerts_mesh
+  alias: Wan Alerts Mesh
+  description: Broadcasts wanAlert over the mesh on any WAN transition and syncs input_boolean.wan_down.
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: &wan_signals
+        - binary_sensor.CHANGE_ME_router_wan_status
+        - binary_sensor.CHANGE_ME_internet_ping
+      from: "on"
+      to: "off"
+    - trigger: state
+      entity_id: *wan_signals
+      from: "off"
+      to: "on"
+  actions:
+    - action: meshtastic.broadcast_channel_message
+      data:
+        ack: true
+        channel: "{{ states('input_text.meshtastic_alert_channel') }}"
+        message: "{% from 'meshtastic_alerts.jinja' import meshAlert %}{{ meshAlert('wanAlert', 'Wan', trigger.to_state.state) | trim }}"
+    - alias: Sync wan_down helper
+      choose:
+        - alias: WAN went down
+          conditions:
+            - condition: template
+              value_template: "{{ trigger.to_state.state == 'off' }}"
+          sequence:
+            - action: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.wan_down
+        - alias: WAN came back
+          conditions:
+            - condition: template
+              value_template: "{{ trigger.to_state.state == 'on' }}"
+          sequence:
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.wan_down

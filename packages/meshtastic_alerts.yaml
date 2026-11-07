@@ -1,0 +1,308 @@
+# Meshtastic Alerts — a home assistant package
+#
+# An off-internet alert path. Home Assistant broadcasts JSON alerts over a Meshtastic LoRa mesh.
+# On the receiving side, one router automation picks them up, dispatches each to a handler script,
+# and sends back an ACK.
+#
+# Install: see README.md. Protocol / adding alert types: see PROTOCOL.md.
+# Needs: custom_templates/meshtastic_alerts.jinja and the meshtastic/home-assistant integration.
+
+# ---------------------------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------------------------
+# Both input_selects are used as LISTS (state_attr(..., 'options')). Nothing ever selects an
+# option, so their current state means nothing.
+input_select:
+  meshtastic_routing:
+    name: meshtastic_routing
+    icon: mdi:spider-web
+    # "<alertType>,<script entity_id>". Add the handler script FIRST, then the route.
+    options:
+      - upsAlert,script.remote_ups_alert
+      - wanAlert,script.remote_wan_alert
+      - garageAlert,script.remote_garage_alert
+      - alarmAlert,script.remote_alarm_alert
+      - leakAlert,script.remote_leak_alert
+      - startupAlert,script.remote_startup_alert
+
+  meshtastic_whitelist:
+    name: meshtastic_whitelist
+    icon: mdi:spider-web
+    # Decimal node numbers allowed to send alerts to this instance. Messages from anything
+    # else are dropped with a "Blocked Mesh Node" notification. That notification shows the
+    # node number, which is the easiest way to find a peer's ID.
+    # "000000" is a harmless placeholder (an input_select needs at least one option).
+    options:
+      - "000000"
+      # - "123456789"   # <- your peer's gateway node number
+
+input_text:
+  meshtastic_alert_channel:
+    name: Meshtastic alert channel
+    icon: mdi:radio-tower
+    # Entity id of the Meshtastic channel entity that senders broadcast on, e.g.
+    # meshtastic.<gateway>_channel_<name>. Set once in the UI. Restored across restarts.
+    max: 255
+
+  meshtastic_alert_notify:
+    name: Meshtastic alert notify override
+    icon: mdi:bell-cog
+    # Optional. A notify action on THIS instance (e.g. notify.mobile_app_<phone>). An incoming
+    # envelope whose "notify" equals this value is delivered there; every other value, or an
+    # empty helper, goes to notify.notify. The envelope can never pick an arbitrary action.
+    max: 255
+
+input_boolean:
+  wan_down:
+    name: WAN down
+    icon: mdi:wan
+    # Mirrors WAN state, maintained by examples/wan_alerts_mesh.yaml. Optional.
+
+# ---------------------------------------------------------------------------------------------
+# The router
+# ---------------------------------------------------------------------------------------------
+automation:
+  - id: mesh_remote_alert
+    alias: "Meshtastic: Dynamic Remote Alerts"
+    description: >-
+      Routes whitelisted inbound Meshtastic JSON alerts to a handler script via
+      input_select.meshtastic_routing, then ACKs. See PROTOCOL.md.
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: meshtastic_api_text_message
+    actions:
+      - choose:
+          - alias: Message is a JSON alert (starts with { and carries a type)
+            conditions:
+              - condition: template
+                value_template: >-
+                  {% set msg = trigger.event.data.data.message %}
+                  {{ msg.startswith('{') and '"type"' in msg }}
+            sequence:
+              - variables:
+                  payload: "{{ trigger.event.data.data.message | from_json }}"
+                  alertType: "{{ payload.type }}"
+                  alertEntity: "{{ payload.get('entity', 'N/A') }}"
+                  alertState: "{{ payload.get('state', 'N/A') }}"
+                  senderNode: "{{ trigger.event.data.node | string }}"
+                  allowedNodes: "{{ state_attr('input_select.meshtastic_whitelist', 'options') | default([], true) }}"
+                  targetScript: "{% from 'meshtastic_alerts.jinja' import getMeshtasticScript %}{{ getMeshtasticScript(alertType) | trim }}"
+
+              # Whitelist runs BEFORE any dispatch — an unknown node can never make a script run.
+              - if:
+                  - condition: template
+                    value_template: "{{ (senderNode | string) not in allowedNodes }}"
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      title: 🚫 Blocked Mesh Node
+                      message: "Blocked a message ({{ alertType }}) from unauthorized node ID: {{ senderNode }}"
+                  - stop: Unauthorized node. Halting automation.
+
+              - choose:
+                  # The ack branch is what stops the mesh looping: every alert is ACKed, and the
+                  # ACK itself arrives here. Without this stop, ACKs would be ACKed forever.
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ alertType == 'ack' }}"
+                    sequence:
+                      - action: system_log.write
+                        data:
+                          message: "Meshtastic ACK received from node {{ senderNode }} for alert: {{ payload.get('alertType', 'unknown') }}"
+                          level: info
+                      - stop: ACK received. Stopping automation to prevent loops.
+
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ targetScript != '' }}"
+                    sequence:
+                      # continue_on_error is LOAD-BEARING. Without it, a route pointing at a script
+                      # that does not exist raises ServiceNotFound and aborts the run before the ACK
+                      # below, so the sender never learns the alert was received. Deliberately NOT
+                      # guarded by a pre-flight existence check: dispatch resolves the script's
+                      # STORAGE KEY, while a template check sees ENTITY IDs, and those desync when a
+                      # script is renamed.
+                      - action: "{{ targetScript }}"
+                        data:
+                          # Passed as a rendered JSON STRING; HA's template post-processing turns it
+                          # back into a dict, which is why {{ message.entity }} works in handlers.
+                          # Don't "fix" this to pass an object.
+                          message: "{{ trigger.event.data.data.message }}"
+                        continue_on_error: true
+                      # Advisory only — false-positives on renamed scripts, so it never blocks.
+                      - if:
+                          - condition: template
+                            value_template: "{{ targetScript not in integration_entities('script') }}"
+                        then:
+                          - action: persistent_notification.create
+                            data:
+                              title: 📡 Remote HA Update — check this route
+                              message: >-
+                                Alert type '{{ alertType }}' for {{ alertEntity }} (state: {{ alertState }})
+                                routed to {{ targetScript }}, but no script ENTITY has that id. If that
+                                script was simply renamed this is harmless - HA dispatches by storage key
+                                and the alert was handled. Otherwise the route is dead and this alert was
+                                NOT handled. Check input_select.meshtastic_routing.
+                # Reached only when the routing table has NO entry for this type.
+                default:
+                  - action: persistent_notification.create
+                    data:
+                      title: 📡 Remote HA Update
+                      message: "Unrouted alert type ({{ alertType }}) received for {{ alertEntity }}. State: {{ alertState }}"
+
+              # Must always be reached — the sender retries until acked.
+              - action: meshtastic.send_text
+                data:
+                  ack: true
+                  text: '{"type": "ack", "alertType": "{{ alertType }}", "status": "received"}'
+                  to: "{{ senderNode }}"
+                response_variable: meshSendResponse
+                continue_on_error: true
+              - stop: Message routed and ACK sent. Automation complete.
+        default:
+          - stop: Not a JSON alert - ordinary chat message, ignored
+
+# ---------------------------------------------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------------------------------------------
+# Receiver contract: every handler takes ONE required object field, `message` (the decoded
+# envelope), reads .entity / .state / .notify, sends exactly one notification, and stops.
+# Handlers never build an action name from the envelope — delivery goes through
+# script.meshtastic_remote_notify, which only uses targets configured on THIS instance.
+script:
+  meshtastic_remote_notify:
+    alias: Meshtastic Remote Notify
+    icon: mdi:bell-ring
+    description: >-
+      Shared delivery for the remote_*_alert handlers. Uses input_text.meshtastic_alert_notify only
+      when the envelope asked for exactly that target, else notify.notify.
+    mode: queued
+    max: 10
+    fields:
+      title:
+        name: Title
+        required: true
+        selector:
+          text: {}
+      message:
+        name: Message
+        required: true
+        selector:
+          text: {}
+      requested_notify:
+        name: Requested notify
+        description: The envelope's "notify" value. Honoured only if it equals the local override.
+        required: false
+        selector:
+          text: {}
+    sequence:
+      - variables:
+          localOverride: "{{ states('input_text.meshtastic_alert_notify') | trim }}"
+          requested: "{{ requested_notify | default('', true) | string | trim }}"
+          useOverride: >-
+            {{ localOverride.startswith('notify.')
+               and localOverride.split('.')[1] | length > 0
+               and requested == localOverride }}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ useOverride }}"
+            sequence:
+              # The action name comes from a LOCAL helper, never from the mesh.
+              - action: "{{ localOverride }}"
+                data:
+                  title: "{{ title }}"
+                  message: "{{ message }}"
+        default:
+          - action: notify.notify
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+
+  remote_ups_alert:
+    alias: Remote UPS Alert
+    icon: mdi:car-battery
+    description: "Handler for Meshtastic upsAlert. Dispatched by the router only."
+    fields: &message_field
+      message:
+        name: Message
+        description: >-
+          The decoded Meshtastic alert payload, passed by automation.mesh_remote_alert.
+          Keys read: entity, state, and optional notify.
+        required: true
+        selector:
+          object: {}
+        example: "{'type': 'upsAlert', 'entity': 'UPS', 'state': 'on_battery'}"
+    sequence:
+      - action: script.meshtastic_remote_notify
+        data:
+          title: ⚠️ Remote Power Alert
+          message: "The remote UPS ({{ message.entity | default('Remote entity', true) }}) shifted to: {{ message.state | default('unknown', true) }}"
+          requested_notify: "{{ message.notify | default('', true) }}"
+      - stop: Remote alert delivered
+
+  remote_wan_alert:
+    alias: Remote WAN Alert
+    icon: mdi:wan
+    description: "Handler for Meshtastic wanAlert ('on' = Connected). Dispatched by the router only."
+    fields: *message_field
+    sequence:
+      - action: script.meshtastic_remote_notify
+        data:
+          title: ⚠️ Remote Wan Alert
+          message: "Wan is now {{ 'Connected' if message.state == 'on' else 'Disconnected' }}"
+          requested_notify: "{{ message.notify | default('', true) }}"
+      - stop: Remote alert delivered
+
+  remote_garage_alert:
+    alias: Remote Garage Alert
+    icon: mdi:garage
+    description: "Handler for Meshtastic garageAlert. Dispatched by the router only."
+    fields: *message_field
+    sequence:
+      - action: script.meshtastic_remote_notify
+        data:
+          title: ⚠️ Remote Garage Alert
+          message: "The remote garage ({{ message.entity | default('Remote entity', true) }}) is now: {{ message.state | default('unknown', true) }}"
+          requested_notify: "{{ message.notify | default('', true) }}"
+      - stop: Remote alert delivered
+
+  remote_alarm_alert:
+    alias: Remote Alarm Alert
+    icon: mdi:shield-alert
+    description: "Handler for Meshtastic alarmAlert. Dispatched by the router only."
+    fields: *message_field
+    sequence:
+      - action: script.meshtastic_remote_notify
+        data:
+          title: ⚠️ Remote Alarm Alert
+          message: "The remote alarm ({{ message.entity | default('Remote entity', true) }}) is now: {{ message.state | default('unknown', true) }}"
+          requested_notify: "{{ message.notify | default('', true) }}"
+      - stop: Remote alert delivered
+
+  remote_leak_alert:
+    alias: Remote Leak Alert
+    icon: mdi:water-alert
+    description: "Handler for Meshtastic leakAlert. Dispatched by the router only."
+    fields: *message_field
+    sequence:
+      - action: script.meshtastic_remote_notify
+        data:
+          title: ⚠️ Remote Leak Alert
+          message: "The remote leak sensor ({{ message.entity | default('Remote entity', true) }}) is now: {{ message.state | default('unknown', true) }}"
+          requested_notify: "{{ message.notify | default('', true) }}"
+      - stop: Remote alert delivered
+
+  remote_startup_alert:
+    alias: Remote Startup Alert
+    icon: mdi:home-alert
+    description: "Handler for Meshtastic startupAlert. Dispatched by the router only."
+    fields: *message_field
+    sequence:
+      - action: script.meshtastic_remote_notify
+        data:
+          title: ⚠️ Remote Startup Alert
+          message: "The remote Home Assistant instance ({{ message.entity | default('Remote entity', true) }}) is now: {{ message.state | default('unknown', true) }}"
+          requested_notify: "{{ message.notify | default('', true) }}"
+      - stop: Remote alert delivered

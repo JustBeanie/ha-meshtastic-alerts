@@ -1,0 +1,18 @@
+# Example sender: tell the peer this instance has started. Handy as an end-to-end test, too:
+# restart HA and the peer should get "⚠️ Remote Startup Alert", and you should see the ACK
+# logged (Settings → System → Logs, "Meshtastic ACK received").
+- id: meshtastic_startup_alert
+  alias: Meshtastic Startup Alert
+  description: Broadcasts startupAlert over the mesh once Home Assistant has started.
+  mode: single
+  triggers:
+    - trigger: homeassistant
+      event: start
+  actions:
+    # Give the Meshtastic integration time to connect to the gateway radio.
+    - delay: "00:01:00"
+    - action: meshtastic.broadcast_channel_message
+      data:
+        ack: true
+        channel: "{{ states('input_text.meshtastic_alert_channel') }}"
+        message: "{% from 'meshtastic_alerts.jinja' import meshAlert %}{{ meshAlert('startupAlert', 'Home Assistant', 'started') | trim }}"

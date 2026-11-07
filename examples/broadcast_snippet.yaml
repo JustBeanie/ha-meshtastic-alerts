@@ -1,0 +1,16 @@
+# How any automation or script sends an alert over the mesh.
+# Drop this action into the actions of whatever automation sees the event.
+#
+# Always render through meshAlert so the wire format lives in one place.
+- action: meshtastic.broadcast_channel_message
+  data:
+    ack: true
+    channel: "{{ states('input_text.meshtastic_alert_channel') }}"
+    message: >-
+      {% from 'meshtastic_alerts.jinja' import meshAlert %}
+      {{ meshAlert('garageAlert', 'Garage Door', 'open') | trim }}
+
+# Optional: ask the receiver to deliver to a specific notify target. The receiver only honours
+# it if the value equals ITS input_text.meshtastic_alert_notify; otherwise it uses notify.notify.
+#
+#     {{ meshAlert('leakAlert', 'Kitchen Sink', 'wet', notify='notify.mobile_app_their_phone') | trim }}
