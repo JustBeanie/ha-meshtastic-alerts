@@ -1,0 +1,44 @@
+name: 🐛 Bug report
+description: Something isn't working as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Please check the **Troubleshooting** table in the README first.
+        Feel free to redact node numbers, channel names and notify targets.
+  - type: dropdown
+    id: side
+    attributes:
+      label: Which side has the problem?
+      options:
+        - Sender (alert isn't sent)
+        - Receiver (alert arrives but no push, or wrong push)
+        - ACK
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: message
+    attributes:
+      label: The raw message (if you have it)
+      render: json
+  - type: textarea
+    id: trace
+    attributes:
+      label: Automation trace or log lines
+      description: The trace of "Meshtastic Dynamic Remote Alerts", or relevant lines from Settings → System → Logs.
+      render: yaml
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "Home Assistant 2026.11.1, Meshtastic integration 0.x"
+    validations:
+      required: true

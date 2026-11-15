@@ -1,0 +1,15 @@
+name: 💡 Idea or new alert type
+description: Suggest an improvement or a new kind of alert.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: For a new alert type, say what triggers it and what the push should say.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it useful?
