@@ -37,6 +37,7 @@ parent's place) can watch each other.
 - [Things that look like bugs but aren't](#things-that-look-like-bugs-but-arent)
 - [What's in this repo](#whats-in-this-repo)
 - [Contributing](#contributing)
+- [License](#license)
 
 ## What you need
 
@@ -201,3 +202,7 @@ These are deliberate. Please don't "fix" them.
 
 Questions, bug reports and new alert types are all welcome. See
 [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
+## License
+
+[Apache-2.0](LICENSE). Use it, change it and share it. Just keep the license notice.

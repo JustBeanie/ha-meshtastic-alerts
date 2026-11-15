@@ -39,3 +39,8 @@ New types are the most common contribution, and they don't need any router chang
 The whitelist and the "envelope can't choose the action" rule are the project's safety boundary.
 If you find a way around either, please open a short issue asking for a private contact rather
 than posting the details publicly.
+
+## License
+
+By contributing, you agree that your contributions are licensed under the
+[Apache-2.0 license](LICENSE), the same as the rest of the project.
